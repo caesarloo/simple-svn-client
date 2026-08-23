@@ -535,7 +535,8 @@ export class SvnClient {
           message: err.message
         });
         const message = this.decodeBuffer(err.stderr).trim() || err.message || "SVN 命令执行失败";
-        throw new Error(message);
+        const code = typeof err.code === "number" ? err.code : 1;
+        throw new SvnError(message, this.decodeBuffer(err.stderr).trim(), code);
       }
     }
 
@@ -575,7 +576,9 @@ export class SvnClient {
         }
         console.error("[svn-client] 命令执行失败 (raw utf8)", { binary, args: safeArgs, code: err.code, message: err.message });
         const message = err.message || "SVN 命令执行失败";
-        throw new Error(message);
+        const code = typeof err.code === "number" ? err.code : 1;
+        const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr instanceof Buffer ? err.stderr.toString("utf8") : "";
+        throw new SvnError(message, stderr, code);
       }
     }
     throw this.buildBinaryNotFoundError(binaries);
@@ -1215,10 +1218,10 @@ export class SvnClient {
   }
 }
 
-/** 目录是否为 SVN 工作副本（顶层存在 .svn 或父级可查） */
+/** 目录是否为 SVN 工作副本（顶层存在 .svn 或父级可查）
+ * 委托 SvnClient.isWorkingCopy()，与客户端保持同一二进制探测与解码逻辑 */
 export async function isSvnWorkingCopy(cwd: string): Promise<boolean> {
-  const r = await execSvn(["info"], cwd, 15000);
-  return r.code === 0;
+  return new SvnClient(cwd).isWorkingCopy();
 }
 
 /** 执行一次完整同步：① 检测可用 ② 取基线版本 ③ svn update ④ 收集变更 */
@@ -1262,7 +1265,17 @@ export async function runSync(
     updError = (error as Error).message;
   }
   const revNew = (await client.getRevision()) ?? revOld;
-  const { items, changedFiles } = await client.collectChanges(revOld, revNew);
+  // 变更收集兜底：update 失败或 diff/log 命令异常时，返回空变更而非向上抛错
+  // （保持 runSync 的契约：返回结构化结果 {ok, message}，不抛错）
+  let items: ChangeItem[] = [];
+  let changedFiles: string[] = [];
+  try {
+    ({ items, changedFiles } = await client.collectChanges(revOld, revNew));
+  } catch (error) {
+    updOk = false;
+    const collectMsg = (error as Error).message;
+    updError = updError ? `${updError}；变更收集失败：${collectMsg}` : `变更收集失败：${collectMsg}`;
+  }
   return {
     snapshot: {
       revision: revNew,

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { SvnClient, execSvn, parseFrontmatter, isSvnWorkingCopy, runSync, generateSummaryWithFallback } from "../src/index";
+import { SvnClient, SvnError, execSvn, parseFrontmatter, isSvnWorkingCopy, runSync, generateSummaryWithFallback } from "../src/index";
 
 jest.mock("node:child_process", () => {
   const { promisify } = jest.requireActual("node:util") as typeof import("node:util");
@@ -272,6 +272,34 @@ describe("SvnClient 解析与命令执行", () => {
     const client = new SvnClient("c:/work", { svnBinaryPath: "C:/nonexistent/svn.exe" });
     await expect(client.ensureAvailable()).rejects.toThrow("未找到 svn 可执行文件");
   });
+
+  test("命令失败时抛 SvnError（携带 stderr 与退出码）", async () => {
+    mockRoutes([{ match: () => true, stdout: "", stderr: "svn: E155007: not a working copy", code: 1 }]);
+    const client = new SvnClient("c:/work");
+    try {
+      await client.update();
+      throw new Error("应当抛错");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SvnError);
+      const svnErr = e as SvnError;
+      expect(svnErr.message).toContain("E155007");
+      expect(svnErr.stderr).toContain("E155007");
+      expect(svnErr.code).toBe(1);
+    }
+  });
+
+  test("runRawUtf8 路径（log/status）失败时同样抛 SvnError", async () => {
+    mockRoutes([{ match: () => true, stdout: "", stderr: "svn: E170000: 目标版本不存在", code: 1 }]);
+    const client = new SvnClient("c:/work");
+    try {
+      await client.log(5);
+      throw new Error("应当抛错");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SvnError);
+      expect((e as SvnError).code).toBe(1);
+      expect((e as SvnError).stderr).toContain("E170000");
+    }
+  });
 });
 
 describe("isSvnWorkingCopy / runSync（同步流程）", () => {
@@ -355,6 +383,42 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
     expect(field?.work).toBe("进行中");
     expect(field?.author).toBe("caesarloo");
     expect(field?.revision).toBe("6");
+  });
+
+  test("runSync：update 失败且变更收集失败时不抛错，返回 ok=false 与错误信息", async () => {
+    // 顺序队列：--version 成功；info（revOld）成功；update 失败；info（revNew）失败；diff --summarize 失败
+    const queue: Array<{ stdout: string; stderr?: string; code?: number }> = [
+      { stdout: "svn, version 1.14.2" }, // --version
+      { stdout: "5" }, // info（revOld）
+      { stdout: "", stderr: "svn: E200007: 提交被拒绝", code: 1 }, // update 失败
+      { stdout: "", stderr: "svn: E155007: not a working copy", code: 1 }, // info（revNew）失败
+      { stdout: "", stderr: "svn: E200009: 无法列出变更", code: 1 }, // diff --summarize 失败
+    ];
+    mockExecFile.mockImplementation((_bin: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout: Buffer, stderr: Buffer) => void) => {
+      if (_bin === "where" || _bin === "which") {
+        cb(null, Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      const item = queue.shift();
+      if (!item) {
+        cb(new Error(`unexpected svn args: ${args.join(" ")}`), Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      if (item.code && item.code !== 0) {
+        const err = new Error(`Command failed: svn ${args.join(" ")}`) as Error & { code?: number; stderr?: Buffer };
+        err.code = item.code;
+        err.stderr = Buffer.from(item.stderr ?? "", "utf8");
+        cb(err, Buffer.from(""), Buffer.from(item.stderr ?? "", "utf8"));
+        return;
+      }
+      cb(null, Buffer.from(item.stdout, "utf8"), Buffer.from(item.stderr ?? "", "utf8"));
+    });
+    const result = await runSync("c:/work", "产品需求");
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("svn update 异常");
+    expect(result.message).toContain("变更收集失败");
+    expect(result.changes).toEqual([]);
+    expect(result.snapshot.changedFiles).toBe(0);
   });
 });
 
