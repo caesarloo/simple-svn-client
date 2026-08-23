@@ -46,8 +46,16 @@ export function execSvn(args: string[], cwd: string, timeoutMs = 60000): Promise
       (err, stdoutBuf, stderrBuf) => {
         const isXml = args.includes("--xml");
         const isCat = args[0] === "cat";
-        const decode = (buf: Buffer) =>
-          process.platform === "win32" && !isXml && !isCat ? iconv.decode(buf, "gbk") : buf.toString("utf8");
+        const decode = (buf: Buffer): string => {
+          if (process.platform !== "win32" || isXml) return buf.toString("utf8");
+          // cat 输出文件内容，编码不确定：先按 UTF-8，出现替换字符（U+FFFD）时回退 GBK
+          if (isCat) {
+            const utf8 = buf.toString("utf8");
+            if (!utf8.includes("\uFFFD")) return utf8;
+            return iconv.decode(buf, "gbk");
+          }
+          return iconv.decode(buf, "gbk");
+        };
         const code = err ? (err as { code?: number }).code ?? 1 : 0;
         resolve({
           stdout: decode(stdoutBuf as Buffer),
@@ -224,7 +232,7 @@ export class SvnClient {
       return "";
     }
     this.validatePaths(paths);
-    return await this.run(["add", "--force", ...paths]);
+    return await this.run(["add", "--force", ...this.safePathArgs(paths)]);
   }
 
   async delete(paths: string[]): Promise<string> {
@@ -232,7 +240,7 @@ export class SvnClient {
       return "";
     }
     this.validatePaths(paths);
-    return await this.run(["delete", ...paths]);
+    return await this.run(["delete", ...this.safePathArgs(paths)]);
   }
 
   async revert(paths: string[], recursive = false): Promise<string> {
@@ -244,7 +252,7 @@ export class SvnClient {
     if (recursive) {
       args.push("-R");
     }
-    args.push(...paths);
+    args.push(...this.safePathArgs(paths));
     return await this.run(args);
   }
 
@@ -253,7 +261,7 @@ export class SvnClient {
       return "";
     }
     this.validatePaths(paths);
-    return await this.run(["resolve", "--accept", "working", ...paths]);
+    return await this.run(["resolve", "--accept", "working", ...this.safePathArgs(paths)]);
   }
 
   /**
@@ -271,7 +279,7 @@ export class SvnClient {
     this.validatePaths(paths);
     this.validateCommitMessage(message);
 
-    const safePaths = paths.map((p) => (p.startsWith("-") ? "./" + p : p));
+    const safePaths = this.safePathArgs(paths);
     const run = () => this.run(["commit", ...safePaths, "-m", message]);
 
     try {
@@ -345,6 +353,12 @@ export class SvnClient {
     // 提交者与版本号：用 -v 日志（含 changed paths）按文件路径精确归属
     const logs = await this.logRange(revOld, revNew);
     const logsDesc = [...logs].sort((a, b) => Number(b.revision) - Number(a.revision));
+    // 日志路径统一为绝对仓库路径（/产品需求/需求A.md），与变更列表的相对路径做精确匹配，
+    // 避免不同目录下同名文件（如 A/需求A.md 与 B/需求A.md）误归属提交者
+    const matchesLogPath = (logPath: string, relativePath: string): boolean => {
+      const normalized = logPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      return normalized === relativePath || normalized.endsWith(`/${relativePath}`);
+    };
     for (const f of files) {
       const m = /^([MADRC!~?])\s+(.+)$/.exec(f);
       const filePath = m ? m[2].trim() : "";
@@ -353,7 +367,7 @@ export class SvnClient {
       // 从含路径的日志中找影响该文件的最近提交
       let info: { revision: string; author: string } | null = null;
       for (const lg of logsDesc) {
-        if (lg.paths.some((p) => p.endsWith(filePath))) {
+        if (lg.paths.some((p) => matchesLogPath(p, filePath))) {
           info = { revision: lg.revision, author: lg.author };
           break;
         }
@@ -379,6 +393,11 @@ export class SvnClient {
       safeArgs[passwordIndex + 1] = "******";
     }
     return safeArgs;
+  }
+
+  /** 路径以 - 开头时加 ./ 前缀，防止被 svn 当作选项 */
+  private safePathArgs(paths: string[]): string[] {
+    return paths.map((p) => (p.startsWith("-") ? "./" + p : p));
   }
 
   private getBinaryCandidates(): string[] {
@@ -575,9 +594,9 @@ export class SvnClient {
           continue;
         }
         console.error("[svn-client] 命令执行失败 (raw utf8)", { binary, args: safeArgs, code: err.code, message: err.message });
-        const message = err.message || "SVN 命令执行失败";
+        const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr instanceof Buffer ? iconv.decode(err.stderr, "utf8") : "";
+        const message = stderr.trim() || err.message || "SVN 命令执行失败";
         const code = typeof err.code === "number" ? err.code : 1;
-        const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr instanceof Buffer ? err.stderr.toString("utf8") : "";
         throw new SvnError(message, stderr, code);
       }
     }
@@ -595,7 +614,7 @@ export class SvnClient {
     const entryRe = /<entry\s+path="([^"]+)">([\s\S]*?)<\/entry>/g;
     let m: RegExpExecArray | null;
     while ((m = entryRe.exec(xml))) {
-      const pathAttr = m[1];
+      const pathAttr = this.decodeXmlEntities(m[1]);
       const inner = m[2];
       const wcMatch = inner.match(/<wc-status[^>]*item="([^"]+)"/);
       const item = wcMatch ? wcMatch[1] : "";
@@ -609,6 +628,16 @@ export class SvnClient {
       }
     }
     return entries;
+  }
+
+  /** 解码 XML 属性中的实体（路径可能含 &quot; &amp; 等转义） */
+  private decodeXmlEntities(value: string): string {
+    return value
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&");
   }
 
   private mapStatusFromItem(item: string): SvnStatusKind | null {

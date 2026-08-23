@@ -128,6 +128,23 @@ describe("execSvn（svnClient.ts 底层）", () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("E155007");
   });
+
+  test("cat 输出 GBK 字节时回退解码（不出现乱码替换字符）", async () => {
+    // 用 GBK 编码的中文构造文件内容字节
+    const iconv = require("iconv-lite") as typeof import("iconv-lite");
+    const gbkBuffer = iconv.encode("项目状态: 进行中", "gbk");
+    mockRoutes([{ match: (a) => a[0] === "cat", stdout: gbkBuffer }]);
+    const r = await execSvn(["cat", "-r", "5", "需求.md"], "c:/work");
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain("\uFFFD");
+    expect(r.stdout).toContain("项目状态");
+  });
+
+  test("cat 输出 UTF-8 字节时保持 UTF-8 解码", async () => {
+    mockRoutes([{ match: (a) => a[0] === "cat", stdout: "项目状态: 进行中\n" }]);
+    const r = await execSvn(["cat", "-r", "5", "需求.md"], "c:/work");
+    expect(r.stdout).toBe("项目状态: 进行中\n");
+  });
 });
 
 describe("SvnClient 解析与命令执行", () => {
@@ -152,6 +169,41 @@ describe("SvnClient 解析与命令执行", () => {
     expect(entries.find((e) => e.path === "a.md")?.status).toBe("added");
     expect(entries.find((e) => e.path === "c.md")?.status).toBe("untracked");
     expect(entries.find((e) => e.path === "d.md")).toBeUndefined();
+  });
+
+  test("status 解析含 XML 实体转义的路径（&quot; &amp;）", async () => {
+    mockRoutes([
+      {
+        match: (a) => a[0] === "status",
+        stdout: `<?xml version="1.0"?>
+<status>
+<target path=".">
+<entry path="a&amp;b.md"><wc-status item="modified"/></entry>
+<entry path="q&quot;uote.md"><wc-status item="added"/></entry>
+</target>
+</status>`,
+      },
+    ]);
+    const client = new SvnClient("c:/work");
+    const entries = await client.status();
+    expect(entries.map((e) => e.path).sort()).toEqual(["a&b.md", 'q"uote.md']);
+  });
+
+  test("add/delete/revert/resolve：路径以 - 开头时加 ./ 前缀防被当选项", async () => {
+    mockRoutes([{ match: () => true, stdout: "ok" }]);
+    const client = new SvnClient("c:/work");
+    await client.add(["-file.md"]);
+    await client.delete(["-file.md"]);
+    await client.revert(["-file.md"]);
+    await client.resolve(["-file.md"]);
+    const addCall = mockExecFile.mock.calls.find((c) => c[1][0] === "add");
+    const deleteCall = mockExecFile.mock.calls.find((c) => c[1][0] === "delete");
+    const revertCall = mockExecFile.mock.calls.find((c) => c[1][0] === "revert");
+    const resolveCall = mockExecFile.mock.calls.find((c) => c[1][0] === "resolve");
+    expect(addCall?.[1]).toContain("./-file.md");
+    expect(deleteCall?.[1]).toContain("./-file.md");
+    expect(revertCall?.[1]).toContain("./-file.md");
+    expect(resolveCall?.[1]).toContain("./-file.md");
   });
 
   test("update 解析 A/U/D 行与统计", async () => {
@@ -419,6 +471,49 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
     expect(result.message).toContain("变更收集失败");
     expect(result.changes).toEqual([]);
     expect(result.snapshot.changedFiles).toBe(0);
+  });
+
+  test("collectChanges：不同目录同名文件不误归属提交者（精确路径匹配）", async () => {
+    const client = new SvnClient("c:/work");
+    // diff --summarize：两个目录下同名文件都变更
+    mockRoutes([
+      { match: (a) => a[0] === "diff", stdout: "M       产品需求/需求A.md\nM       测试/需求A.md\n" },
+      {
+        match: (a) => a[0] === "log",
+        stdout: `<?xml version="1.0"?>
+<log>
+<logentry revision="6">
+<author>张三</author>
+<date>2026-08-01T10:00:00.000000Z</date>
+<paths>
+<path action="M">/产品需求/需求A.md</path>
+</paths>
+<msg>改产品需求</msg>
+</logentry>
+<logentry revision="5">
+<author>李四</author>
+<date>2026-08-01T09:00:00.000000Z</date>
+<paths>
+<path action="M">/测试/需求A.md</path>
+</paths>
+<msg>改测试</msg>
+</logentry>
+</log>`,
+      },
+      // cat：各版本内容（diffFrontmatterFields 需要）；按 revision 区分新旧
+      { match: (a) => a[0] === "cat" && a.includes("产品需求") && a.includes("4"), stdout: "---\n项目状态: 未开始\n---\n正文" },
+      { match: (a) => a[0] === "cat" && a.includes("产品需求") && a.includes("6"), stdout: "---\n项目状态: 进行中\n---\n正文" },
+      { match: (a) => a[0] === "cat" && a.includes("4"), stdout: "---\n项目状态: 未开始\n---\n正文" },
+      { match: (a) => a[0] === "cat", stdout: "---\n项目状态: 进行中\n---\n正文" },
+    ]);
+    const { items, changedFiles } = await client.collectChanges("4", "6");
+    expect(changedFiles).toEqual(["产品需求/需求A.md", "测试/需求A.md"]);
+    // 产品需求/需求A.md 归属张三 r6；测试/需求A.md 归属李四 r5
+    const productItems = items.filter((i) => i.file === "需求A.md");
+    const productChange = productItems.find((i) => i.field === "项目状态");
+    expect(productChange?.author).toBe("张三");
+    expect(productChange?.revision).toBe("6");
+    expect(items.some((i) => i.author === "李四" && i.revision === "5")).toBe(true);
   });
 });
 
