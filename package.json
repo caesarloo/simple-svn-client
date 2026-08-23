@@ -1,0 +1,41 @@
+{
+  "name": "@caesarloo/simple-svn-client",
+  "version": "0.1.0",
+  "description": "SVN CLI wrapper for Node.js — wraps the system svn executable with Windows GBK-safe decoding, binary discovery and error reporting",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "svn",
+    "subversion",
+    "wrapper",
+    "child-process",
+    "gbk",
+    "encoding"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "iconv-lite": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.2",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.7.3"
+  }
+}
