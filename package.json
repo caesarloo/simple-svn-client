@@ -24,6 +24,17 @@
     "gbk",
     "encoding"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caesarloo/simple-svn-client.git"
+  },
+  "homepage": "https://github.com/caesarloo/simple-svn-client",
+  "bugs": {
+    "url": "https://github.com/caesarloo/simple-svn-client/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=16"
   },
