@@ -77,7 +77,7 @@ console.log(sync.message, sync.snapshot);
 
 | Method | Description |
 | --- | --- |
-| `constructor(workingCopyPath, options?)` | `options: { svnBinaryPath?, enableDebugLog?, timeoutMs? }` (default timeout 60s, `0` = none) |
+| `constructor(workingCopyPath, options?)` | `options: { svnBinaryPath?, enableDebugLog?, timeoutMs?, fileContentReader? }` (default timeout 60s, `0` = none; `fileContentReader: (relativePath) => Promise<Buffer \| null>` reads unversioned/added file content for diff preview — the client does **not** depend on Node `fs`) |
 | `isAvailable()` / `ensureAvailable()` | Check `svn --version`; boolean vs throw |
 | `getRevision()` | `svn info --show-item revision` → `string \| null` |
 | `isWorkingCopy()` | `svn info` success check |

@@ -1,6 +1,6 @@
 {
   "name": "@caesarloo/simple-svn-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SVN CLI wrapper for Node.js — wraps the system svn executable with Windows GBK-safe decoding, binary discovery and error reporting",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

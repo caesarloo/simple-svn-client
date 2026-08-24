@@ -11,9 +11,6 @@
  * - 失败抛错（含解码后的 stderr），XML 输出严格按 UTF-8 解析
  */
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
-import path from "node:path";
 import { promisify } from "node:util";
 import iconv from "iconv-lite";
 import { parseFrontmatter } from "./frontmatter";
@@ -75,6 +72,12 @@ export interface SvnClientOptions {
   enableDebugLog?: boolean;
   /** 单条命令超时（毫秒），默认 60000；传 0 表示不设超时 */
   timeoutMs?: number;
+  /**
+   * 文件内容读取器（相对工作副本路径 → 文件内容 Buffer | null）。
+   * 用于未版本化/新增文件的 diff 预览；未配置时该预览抛错。
+   * 提供此回调可避免客户端直接依赖 Node 内置 fs 模块（Obsidian 社区审核要求）。
+   */
+  fileContentReader?: (relativePath: string) => Promise<Buffer | null>;
 }
 
 /** commit 选项 */
@@ -87,6 +90,7 @@ export class SvnClient {
   private readonly svnBinaryPath: string;
   private readonly enableDebugLog: boolean;
   private readonly timeoutMs: number;
+  private readonly fileContentReader: ((relativePath: string) => Promise<Buffer | null>) | null;
 
   constructor(
     private readonly workingCopyPath: string,
@@ -95,6 +99,7 @@ export class SvnClient {
     this.svnBinaryPath = options.svnBinaryPath ?? "";
     this.enableDebugLog = options.enableDebugLog ?? false;
     this.timeoutMs = options.timeoutMs ?? 60000;
+    this.fileContentReader = options.fileContentReader ?? null;
   }
 
   private debugLog(message: string, details?: unknown): void {
@@ -451,28 +456,6 @@ export class SvnClient {
     }
   }
 
-  private isCommandName(binary: string): boolean {
-    return !binary.includes("/") && !binary.includes("\\") && !binary.includes(":");
-  }
-
-  private async existsExecutable(binary: string): Promise<boolean> {
-    if (this.isCommandName(binary)) {
-      return true;
-    }
-
-    const normalized = binary.replace(/\\/g, "/");
-    if (!path.isAbsolute(normalized)) {
-      return false;
-    }
-
-    try {
-      await access(normalized, constants.F_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async resolveBinaryCandidates(): Promise<string[]> {
     const baseCandidates = this.getBinaryCandidates();
     const discovered = await this.discoverFromSystemPath();
@@ -483,14 +466,9 @@ export class SvnClient {
       return merged.findIndex((other) => (process.platform === "win32" ? other.toLowerCase() : other) === normalized) === index;
     });
 
-    const available: string[] = [];
-    for (const candidate of deduped) {
-      if (await this.existsExecutable(candidate)) {
-        available.push(candidate);
-      }
-    }
-
-    return available;
+    // 不做文件系统存在性预探测（避免依赖 Node 内置 fs 模块）：缺失的二进制由 execFile 的 ENOENT
+    // 回退依次尝试下一候选；全部不可用时统一抛「未找到 svn 可执行文件」。
+    return deduped;
   }
 
   private buildBinaryNotFoundError(candidates: string[]): Error {
@@ -896,8 +874,14 @@ export class SvnClient {
   }
 
   private async buildFileContentDiff(relativePath: string): Promise<SvnDiff> {
-    const fullPath = path.join(this.workingCopyPath, relativePath);
-    const fileBuffer = await readFile(fullPath);
+    // 未版本化/新增文件的内容预览经注入的 fileContentReader 读取，避免直接依赖 Node 内置 fs 模块
+    if (!this.fileContentReader) {
+      throw new Error(`未配置文件内容读取器（fileContentReader），无法预览未版本化文件：${relativePath}`);
+    }
+    const fileBuffer = await this.fileContentReader(relativePath);
+    if (fileBuffer === null) {
+      throw new Error(`读取文件内容失败：${relativePath}`);
+    }
 
     if (this.isLikelyBinaryFile(fileBuffer)) {
       throw new Error(`该文件可能为二进制文件，暂不支持文本预览：${relativePath}`);
