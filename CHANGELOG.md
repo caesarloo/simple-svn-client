@@ -8,6 +8,15 @@
   - 未版本化/新增文件的 diff 预览改为经注入的 `SvnClientOptions.fileContentReader(relativePath) => Promise<Buffer | null>` 读取，
     未配置该回调时预览抛明确错误（`diff()` 的已版本化路径不受影响）。
 
+### Fixed
+- ENOENT 诊断增强：Node `spawn` 对「cwd 无效」与「二进制缺失」返回相同的 ENOENT（无法从 error 对象区分），
+  最终「未找到 svn 可执行文件」错误消息补充候选路径与当前工作副本路径提示，便于区分两类原因
+  （保持零 fs 依赖与「child_process 仅剩 svn」的合规承诺，不额外探测 cwd）。
+
+### Tests
+- 新增 5 个用例：`fileContentReader` 未配置抛错 / 配置后正常返回 / 返回 null 抛读取失败、
+  首个候选 ENOENT 回退下一候选成功、全部候选 ENOENT 时错误含 cwd 提示（35 用例全绿）。
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

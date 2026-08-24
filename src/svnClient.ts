@@ -472,11 +472,17 @@ export class SvnClient {
   }
 
   private buildBinaryNotFoundError(candidates: string[]): Error {
+    // 说明：Node spawn 对「可执行文件缺失」与「cwd 无效」返回相同的 ENOENT（err.path 均为候选二进制），
+    // 无法从 error 对象区分；为保持零 fs 依赖与「child_process 仅剩 svn」的合规承诺，不额外探测 cwd，
+    // 而是在错误消息中同时给出两类可能，便于用户自查。
+    const hasBareName = candidates.some((c) => !c.includes("/") && !c.includes("\\") && !c.includes(":"));
     const message = [
       "未找到 svn 可执行文件。",
       `已尝试：${candidates.join(" | ")}`,
-      "请在设置中配置 svn.exe 的绝对路径（例如 C:/Program Files/TortoiseSVN/bin/svn.exe）。",
-      "若安装 TortoiseSVN，请在安装时勾选“Command line client tools”组件。"
+      hasBareName
+        ? "请确认已安装 svn 命令行工具并位于 PATH（Windows: TortoiseSVN 安装时勾选“Command line client tools”，或安装 SlikSvn/VisualSVN）。"
+        : "请检查上述候选路径是否正确、svn 是否安装在该位置。",
+      `当前工作副本路径：${this.workingCopyPath}（若该路径不存在，svn 也会报相同错误，请一并检查）`
     ].join(" ");
     return new Error(message);
   }
@@ -515,6 +521,8 @@ export class SvnClient {
         const err = error as Error & { stderr?: Buffer | string; stdout?: Buffer | string; code?: string | number };
 
         if (err.code === "ENOENT") {
+          // 二进制缺失 → 回退下一候选。注意：cwd 无效时 Node 也报 ENOENT（无法区分），
+          // 该场景由 buildBinaryNotFoundError 的 cwd 提示兜底诊断。
           console.warn("[svn-client] svn 可执行文件未找到，尝试下一个候选", {
             binary,
             args: safeArgs,
@@ -568,6 +576,7 @@ export class SvnClient {
       } catch (error) {
         const err = error as Error & { code?: string | number; stderr?: Buffer | string };
         if (err.code === "ENOENT") {
+          // 同 run()：cwd 无效与二进制缺失同为 ENOENT，统一回退，最终错误含 cwd 提示
           console.warn("[svn-client] svn 可执行文件未找到 (raw utf8)，尝试下一个候选", { binary, args: safeArgs, message: err.message });
           continue;
         }

@@ -545,3 +545,67 @@ describe("generateSummaryWithFallback（summary.ts）", () => {
     expect(summary).toContain("需求A 标题");
   });
 });
+
+describe("v0.1.1：fileContentReader 与 ENOENT 回退", () => {
+  /** diff 命令失败（未版本化文件无法生成 svn diff → 降级 buildFileContentDiff）的公共路由 */
+  const diffFailsRoute = { match: (a: string[]) => a[0] === "diff", stdout: "", stderr: "svn: E155007: 无法为未版本化文件生成 diff", code: 1 };
+
+  test("diff：未版本化文件且未配置 fileContentReader 时抛明确错误", async () => {
+    mockRoutes([diffFailsRoute]);
+    const client = new SvnClient("c:/work");
+    await expect(client.diff("新增.md")).rejects.toThrow("未配置文件内容读取器");
+  });
+
+  test("diff：配置 fileContentReader 后未版本化文件预览正常返回", async () => {
+    mockRoutes([diffFailsRoute]);
+    const reader = jest.fn(async (p: string) => Buffer.from(`# ${p}\n正文内容`, "utf8"));
+    const client = new SvnClient("c:/work", { fileContentReader: reader });
+    const result = await client.diff("新增.md");
+    expect(reader).toHaveBeenCalledWith("新增.md");
+    expect(result.compareMode).toBe("file-content");
+    expect(result.filePath).toBe("新增.md");
+    expect(result.lines[0].content).toBe("# 新增.md");
+    expect(result.lines[1].content).toBe("正文内容");
+  });
+
+  test("diff：fileContentReader 返回 null 时抛读取失败错误", async () => {
+    mockRoutes([diffFailsRoute]);
+    const client = new SvnClient("c:/work", { fileContentReader: async () => null });
+    await expect(client.diff("新增.md")).rejects.toThrow("读取文件内容失败");
+  });
+
+  test("二进制候选：首个候选 ENOENT 时回退尝试下一候选并成功", async () => {
+    let execCalls = 0;
+    mockExecFile.mockImplementation((bin: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: Buffer, stderr: Buffer) => void) => {
+      if (bin === "where" || bin === "which") {
+        cb(null, Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      execCalls += 1;
+      if (execCalls === 1) {
+        const err = new Error(`spawn ${bin} ENOENT`) as Error & { code?: string };
+        err.code = "ENOENT";
+        cb(err, Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      cb(null, Buffer.from("svn, version 1.14.2"), Buffer.from(""));
+    });
+    const client = new SvnClient("c:/work", { svnBinaryPath: "C:/first/svn.exe" });
+    await expect(client.ensureAvailable()).resolves.toBeUndefined();
+    expect(execCalls).toBe(2); // 候选1 ENOENT → 候选2 成功，不再继续
+  });
+
+  test("全部候选 ENOENT：错误消息包含候选与 cwd 诊断提示", async () => {
+    mockEnOent();
+    const client = new SvnClient("c:/work", { svnBinaryPath: "C:/nonexistent/svn.exe" });
+    try {
+      await client.ensureAvailable();
+      throw new Error("应当抛错");
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain("未找到 svn 可执行文件");
+      expect(msg).toContain("C:/nonexistent/svn.exe");
+      expect(msg).toContain("c:/work"); // cwd 提示，便于区分「cwd 无效」场景
+    }
+  });
+});
