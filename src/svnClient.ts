@@ -139,6 +139,21 @@ export class SvnClient {
     }
   }
 
+  /**
+   * 工作副本根路径（svn info --show-item wc-root，svn 1.8+）。
+   * 用于「工作副本位于 cwd 子目录」的部署（如 vault 内仅某目录是 SVN 仓库）时探测真实根；
+   * 非工作副本或 svn 不可用时返回 null。
+   */
+  async getWorkingCopyRoot(): Promise<string | null> {
+    try {
+      const output = await this.runRawUtf8(["info", "--show-item", "wc-root"]);
+      const root = output.trim();
+      return root || null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 目录是否为 SVN 工作副本（svn info 成功） */
   async isWorkingCopy(): Promise<boolean> {
     try {
@@ -1252,10 +1267,17 @@ export async function isSvnWorkingCopy(cwd: string): Promise<boolean> {
   return new SvnClient(cwd).isWorkingCopy();
 }
 
-/** 执行一次完整同步：① 检测可用 ② 取基线版本 ③ svn update ④ 收集变更 */
+/**
+ * 执行一次完整同步：① 检测可用 ② 取基线版本 ③ svn update ④ 收集变更。
+ * 自动探测真实工作副本根（svn info --show-item wc-root）：
+ * - cwd 本身是工作副本根（常见部署）→ 行为与旧版完全一致；
+ * - SVN 工作副本位于 cwd 子目录（如 vault 内仅 repoDir 是 SVN 仓库）→ 先探测 cwd，失败再探测 cwd/repoDir，
+ *   以真实根为基准执行，避免在非工作副本位置 update 失败；
+ * - 探测全部失败（非工作副本/无 svn）→ 回退原 cwd，由后续流程给出明确错误。
+ */
 export async function runSync(
   cwd: string,
-  _repoDir: string
+  repoDir = ""
 ): Promise<{
   snapshot: SnapshotInfo;
   changes: ChangeItem[];
@@ -1263,7 +1285,18 @@ export async function runSync(
   message: string;
   revOld: string | null;
 }> {
-  const client = new SvnClient(cwd);
+  // 探测真实工作副本根：cwd → cwd/repoDir（repoDir 提供时），首个成功的路径作为执行基准
+  const joinDir = (base: string, sub: string): string => `${base.replace(/[\\/]+$/, "")}/${sub.replace(/^[\\/]+/, "")}`;
+  const probePaths = repoDir ? [cwd, joinDir(cwd, repoDir)] : [cwd];
+  let baseCwd = cwd;
+  for (const p of probePaths) {
+    const root = await new SvnClient(p).getWorkingCopyRoot();
+    if (root) {
+      baseCwd = root;
+      break;
+    }
+  }
+  const client = new SvnClient(baseCwd);
   if (!(await client.isAvailable())) {
     return {
       snapshot: { revision: "—", date: "", changedFiles: 0 },

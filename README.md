@@ -68,7 +68,7 @@ console.log(sync.message, sync.snapshot);
 | `execSvn(args, cwd, timeoutMs?)` | Low-level exec, never throws, returns `{stdout, stderr, code}` |
 | `SvnError` | Error with `stderr` + `code` |
 | `isSvnWorkingCopy(cwd)` | Whether a directory is an SVN working copy |
-| `runSync(cwd, repoDir)` | Full sync: availability → base revision → update → collect changes |
+| `runSync(cwd, repoDir)` | Full sync: availability → base revision → update → collect changes; auto-detects the real working-copy root via `svn info --show-item wc-root` (probes `cwd` then `cwd/repoDir`), so SVN checkouts living in a vault subdirectory sync correctly |
 | `parseFrontmatter(text)` / `extractFrontmatterBlock(text)` | Simplified YAML frontmatter parsing |
 | `generateSummaryWithFallback(entries, diffProvider?)` | Natural-language change summary + file list |
 | `toSummaryDiffLines(lines)` | Adapt `DiffLine[]` to `SummaryDiffLine[]` |

@@ -383,6 +383,7 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
   test("runSync：完整同步成功返回快照与变更", async () => {
     // 顺序队列：where/which 返回空，其余按调用顺序消费
     const queue: Array<{ stdout: string; stderr?: string; code?: number }> = [
+      { stdout: "c:/work" }, // 探测 wc-root（cwd 即工作副本根）
       { stdout: "svn, version 1.14.2" }, // --version
       { stdout: "5" }, // info（revOld）
       { stdout: "Updated to revision 6." }, // update
@@ -438,8 +439,9 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
   });
 
   test("runSync：update 失败且变更收集失败时不抛错，返回 ok=false 与错误信息", async () => {
-    // 顺序队列：--version 成功；info（revOld）成功；update 失败；info（revNew）失败；diff --summarize 失败
+    // 顺序队列：wc-root 探测成功；--version 成功；info（revOld）成功；update 失败；info（revNew）失败；diff --summarize 失败
     const queue: Array<{ stdout: string; stderr?: string; code?: number }> = [
+      { stdout: "c:/work" }, // 探测 wc-root（cwd 即工作副本根）
       { stdout: "svn, version 1.14.2" }, // --version
       { stdout: "5" }, // info（revOld）
       { stdout: "", stderr: "svn: E200007: 提交被拒绝", code: 1 }, // update 失败
@@ -471,6 +473,68 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
     expect(result.message).toContain("变更收集失败");
     expect(result.changes).toEqual([]);
     expect(result.snapshot.changedFiles).toBe(0);
+  });
+
+  test("runSync：工作副本位于 cwd 子目录（vault 根非 SVN）时自动以真实仓库根为基准同步", async () => {
+    // cwd=c:/vault（非工作副本）：wc-root 探测失败；cwd/产品需求 是工作副本根 → 探测成功，后续在该根上执行
+    const queue: Array<{ stdout: string; stderr?: string; code?: number }> = [
+      { stdout: "c:/vault/产品需求" }, // 在 c:/vault/产品需求 上探测 wc-root → 返回真实根
+      { stdout: "svn, version 1.14.2" }, // --version
+      { stdout: "5" }, // info（revOld）
+      { stdout: "Updated to revision 6." }, // update
+      { stdout: "6" }, // info（revNew）
+      { stdout: "M       需求A.md\n" }, // diff --summarize（相对仓库根的路径）
+      {
+        stdout: `<?xml version="1.0"?>
+<log>
+<logentry revision="6">
+<author>caesarloo</author>
+<date>2026-08-01T10:00:00.000000Z</date>
+<paths>
+<path action="M">/需求A.md</path>
+</paths>
+<msg>更新进展</msg>
+</logentry>
+</log>`,
+      }, // log --xml -v
+      { stdout: "---\n项目状态: 未开始\n---\n正文" }, // cat r5
+      { stdout: "---\n项目状态: 进行中\n---\n正文" }, // cat r6
+    ];
+    mockExecFile.mockImplementation((_bin: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: Buffer, stderr: Buffer) => void) => {
+      if (_bin === "where" || _bin === "which") {
+        cb(null, Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      const execCwd = (opts as { cwd: string }).cwd;
+      if (execCwd === "c:/vault") {
+        // vault 根非工作副本：wc-root 探测失败（不消费队列）
+        const err = new Error("Command failed: svn info") as Error & { code?: number; stderr?: Buffer };
+        err.code = 1;
+        err.stderr = Buffer.from("svn: E155007: not a working copy");
+        cb(err, Buffer.from(""), Buffer.from("svn: E155007: not a working copy"));
+        return;
+      }
+      const item = queue.shift();
+      if (!item) {
+        cb(new Error(`unexpected svn args: ${args.join(" ")}`), Buffer.from(""), Buffer.from(""));
+        return;
+      }
+      if (item.code && item.code !== 0) {
+        const err = new Error(`Command failed: svn ${args.join(" ")}`) as Error & { code?: number; stderr?: Buffer };
+        err.code = item.code;
+        err.stderr = Buffer.from(item.stderr ?? "", "utf8");
+        cb(err, Buffer.from(""), Buffer.from(item.stderr ?? "", "utf8"));
+        return;
+      }
+      cb(null, Buffer.from(item.stdout, "utf8"), Buffer.from(item.stderr ?? "", "utf8"));
+    });
+    const result = await runSync("c:/vault", "产品需求");
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("svn update 完成：r5 → r6");
+    expect(result.snapshot.changedFiles).toBeGreaterThan(0);
+    const field = result.changes.find((c) => c.field === "项目状态");
+    expect(field?.base).toBe("未开始");
+    expect(field?.work).toBe("进行中");
   });
 
   test("collectChanges：不同目录同名文件不误归属提交者（精确路径匹配）", async () => {

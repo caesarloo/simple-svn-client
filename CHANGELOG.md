@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3] - 2026-08-24
+
+### Fixed
+- `runSync(cwd, repoDir)` 的 `repoDir` 参数生效：自动探测真实工作副本根
+  （`svn info --show-item wc-root`）——先探测 `cwd`，失败再探测 `cwd/repoDir`，以真实根为基准执行
+  update/collectChanges。修复「SVN 工作副本位于 vault 子目录」时在非工作副本位置同步失败的问题；
+  cwd 本身是工作副本根时行为与旧版完全一致（探测返回 cwd，零行为变化）。
+- 新增 `SvnClient.getWorkingCopyRoot(): Promise<string | null>`（svn 1.8+；非工作副本返回 null）。
+
+### Tests
+- 新增 1 个用例：工作副本位于 cwd 子目录（vault 根非 SVN）时自动以真实仓库根同步（39 用例全绿）。
+
 ## [0.1.2] - 2026-08-24
 
 ### Fixed
