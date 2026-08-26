@@ -609,3 +609,47 @@ describe("v0.1.1：fileContentReader 与 ENOENT 回退", () => {
     }
   });
 });
+
+describe("parseDiffOutput（hunk 行号解析）", () => {
+  /** 构造单文件 svn diff 文本 */
+  const buildDiff = (hunks: string[]): string =>
+    ["Index: 需求A.md", "===================================================================", "--- 需求A.md\t(revision 5)", "+++ 需求A.md\t(working copy)", ...hunks, ""].join("\n");
+
+  test("hunk 不从文件第 1 行开始时，行号按 hunk 头 +c 起始计算（不再恒从 1 累计）", async () => {
+    mockRoutes([
+      {
+        match: (a) => a[0] === "diff",
+        stdout: buildDiff(["@@ -4,3 +4,3 @@", " 正文第一行", "+新增行", " 正文第三行"]),
+      },
+    ]);
+    const client = new SvnClient("c:/work");
+    const result = await client.diff("需求A.md");
+    // 实际文件行号：正文第一行=4，新增行=5，正文第三行=6
+    expect(result.lines.map((l) => l.lineNumber)).toEqual([4, 5, 6]);
+    expect(result.lines.map((l) => l.type)).toEqual(["unchanged", "added", "unchanged"]);
+  });
+
+  test("多个 hunk 时每个 hunk 按各自起始行号重置", async () => {
+    mockRoutes([
+      {
+        match: (a) => a[0] === "diff",
+        stdout: buildDiff(["@@ -1,2 +1,2 @@", " ---", " 项目状态: 进行中", "@@ -4,3 +4,3 @@", " 正文第一行", "+新增行", " 正文第三行"]),
+      },
+    ]);
+    const client = new SvnClient("c:/work");
+    const result = await client.diff("需求A.md");
+    expect(result.lines.map((l) => l.lineNumber)).toEqual([1, 2, 4, 5, 6]);
+  });
+
+  test("省略 ,count 的 hunk 头（@@ -4 +4 @@）同样正确解析", async () => {
+    mockRoutes([
+      {
+        match: (a) => a[0] === "diff",
+        stdout: buildDiff(["@@ -4 +4 @@", " 正文第一行", "+新增行"]),
+      },
+    ]);
+    const client = new SvnClient("c:/work");
+    const result = await client.diff("需求A.md");
+    expect(result.lines.map((l) => l.lineNumber)).toEqual([4, 5]);
+  });
+});

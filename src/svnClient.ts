@@ -700,6 +700,12 @@ export class SvnClient {
     for (const line of lines) {
       if (line.startsWith("@@")) {
         inHunk = true;
+        // 解析 hunk 头「@@ -a,b +c,d @@」的新文件起始行号（+c），否则行号恒从 1 累计，
+        // 当 hunk 不从文件第 1 行开始时（如 frontmatter 无变更、hunk 从正文开始）行号会严重偏小。
+        // 兼容省略 ,count 的单行形式（@@ -4 +4 @@）与仅有旧行号的格式。
+        const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+        const startLine = hunkMatch ? Number.parseInt(hunkMatch[2], 10) : Number.parseInt(/^@@ -(\d+)/.exec(line)?.[1] ?? "1", 10);
+        currentLineNumber = Number.isFinite(startLine) ? startLine : 1;
         continue;
       }
 

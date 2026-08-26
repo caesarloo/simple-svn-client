@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.2] - 2026-08-24
+
+### Fixed
+- `diff()` 行号解析：`parseDiffOutput` 现在解析 hunk 头（`@@ -a,b +c,d @@`）的新文件起始行号，
+  不再恒从 1 累计——当 hunk 不从文件第 1 行开始时（如 frontmatter 无变更、hunk 直接从正文开始），
+  `DiffLine.lineNumber` 与实际文件行号一致（消费方可正确用行号判定 frontmatter 区块）；
+  多 hunk 各自重置行号，兼容省略 `,count` 的单行 hunk 头（`@@ -4 +4 @@`）。
+
+### Tests
+- 新增 3 个用例：hunk 非首行起始的行号、多 hunk 行号重置、省略 `,count` 的 hunk 头（38 用例全绿）。
+
 ## [0.1.1] - 2026-08-24
 
 ### Changed
