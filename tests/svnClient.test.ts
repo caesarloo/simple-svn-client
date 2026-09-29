@@ -1,6 +1,15 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { SvnClient, SvnError, execSvn, parseFrontmatter, isSvnWorkingCopy, runSync, generateSummaryWithFallback } from "../src/index";
+import {
+  SvnClient,
+  SvnError,
+  clearBinaryCandidatesCache,
+  execSvn,
+  generateSummaryWithFallback,
+  isSvnWorkingCopy,
+  parseFrontmatter,
+  runSync,
+} from "../src/index";
 
 jest.mock("node:child_process", () => {
   const { promisify } = jest.requireActual("node:util") as typeof import("node:util");
@@ -71,6 +80,7 @@ function mockEnOent(): void {
 
 beforeEach(() => {
   mockExecFile.mockReset();
+  clearBinaryCandidatesCache(); // 二进制候选按「配置路径 + 平台」缓存，跨用例需清空
 });
 
 describe("parseFrontmatter（frontmatter.ts）", () => {
@@ -212,7 +222,17 @@ describe("SvnClient 解析与命令执行", () => {
     ]);
     const client = new SvnClient("c:/work");
     const result = await client.update();
-    expect(result.summary).toEqual({ total: 3, added: 1, modified: 1, deleted: 1, totalSize: 0 });
+    expect(result.summary).toEqual({
+      total: 3,
+      added: 1,
+      modified: 1,
+      deleted: 1,
+      conflicted: 0,
+      merged: 0,
+      replaced: 0,
+      propertyModified: 0,
+      totalSize: 0,
+    });
     expect(result.entries.map((e) => e.status)).toEqual(["added", "modified", "deleted"]);
   });
 
@@ -278,9 +298,16 @@ describe("SvnClient 解析与命令执行", () => {
     await expect(client.commit(["a.md"], "  ")).rejects.toThrow("提交备注不能为空");
   });
 
-  test("commit 输入校验：危险字符抛错", async () => {
+  test("commit 输入校验：shell 元字符不再误伤合法文件名（execFile 无 shell，注入不存在）", async () => {
+    mockRoutes([{ match: () => true, stdout: "Committed revision 9.\n" }]);
     const client = new SvnClient("c:/work");
-    await expect(client.commit(["a.md;rm -rf"], "msg")).rejects.toThrow("输入验证失败");
+    await expect(client.commit(["a&b.md", "a;b.md", "a$b.md"], "msg")).resolves.toContain("Committed revision 9");
+  });
+
+  test("commit 输入校验：控制字符（换行 / NUL）仍被拒绝", async () => {
+    const client = new SvnClient("c:/work");
+    await expect(client.commit(["a\nb.md"], "msg")).rejects.toThrow("输入验证失败");
+    await expect(client.commit(["a.md"], "备注\u0000")).rejects.toThrow("输入验证失败");
   });
 
   test("commit autoAdd：E200009 时自动 add 后重试一次", async () => {
@@ -475,10 +502,10 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
     expect(result.snapshot.changedFiles).toBe(0);
   });
 
-  test("runSync：工作副本位于 cwd 子目录（vault 根非 SVN）时自动以真实仓库根为基准同步", async () => {
-    // cwd=c:/vault（非工作副本）：wc-root 探测失败；cwd/产品需求 是工作副本根 → 探测成功，后续在该根上执行
+  test("runSync：工作副本位于 cwd 子目录（wc 根非 SVN）时自动以真实仓库根为基准同步", async () => {
+    // cwd=c:/wc（非工作副本）：wc-root 探测失败；cwd/产品需求 是工作副本根 → 探测成功，后续在该根上执行
     const queue: Array<{ stdout: string; stderr?: string; code?: number }> = [
-      { stdout: "c:/vault/产品需求" }, // 在 c:/vault/产品需求 上探测 wc-root → 返回真实根
+      { stdout: "c:/wc/产品需求" }, // 在 c:/wc/产品需求 上探测 wc-root → 返回真实根
       { stdout: "svn, version 1.14.2" }, // --version
       { stdout: "5" }, // info（revOld）
       { stdout: "Updated to revision 6." }, // update
@@ -506,8 +533,8 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
         return;
       }
       const execCwd = (opts as { cwd: string }).cwd;
-      if (execCwd === "c:/vault") {
-        // vault 根非工作副本：wc-root 探测失败（不消费队列）
+      if (execCwd === "c:/wc") {
+        // wc 根非工作副本：wc-root 探测失败（不消费队列）
         const err = new Error("Command failed: svn info") as Error & { code?: number; stderr?: Buffer };
         err.code = 1;
         err.stderr = Buffer.from("svn: E155007: not a working copy");
@@ -528,7 +555,7 @@ describe("isSvnWorkingCopy / runSync（同步流程）", () => {
       }
       cb(null, Buffer.from(item.stdout, "utf8"), Buffer.from(item.stderr ?? "", "utf8"));
     });
-    const result = await runSync("c:/vault", "产品需求");
+    const result = await runSync("c:/wc", "产品需求");
     expect(result.ok).toBe(true);
     expect(result.message).toBe("svn update 完成：r5 → r6");
     expect(result.snapshot.changedFiles).toBeGreaterThan(0);

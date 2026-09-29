@@ -1,20 +1,23 @@
 {
   "name": "@caesarloo/simple-svn-client",
-  "version": "0.1.3",
-  "description": "SVN CLI wrapper for Node.js — wraps the system svn executable with Windows GBK-safe decoding, binary discovery and error reporting",
+  "version": "0.2.0",
+  "description": "SVN CLI wrapper for Node.js — Windows-safe decoding, typed parsing of status/update/diff/log, conflict guards, no fs dependency",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "keywords": [
     "svn",
@@ -22,7 +25,8 @@
     "wrapper",
     "child-process",
     "gbk",
-    "encoding"
+    "encoding",
+    "conflict"
   ],
   "repository": {
     "type": "git",

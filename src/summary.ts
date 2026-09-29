@@ -1,27 +1,52 @@
 /**
  * 基于 svn status 的变更摘要生成（从 obsidian-svn 的 summaryService.ts 迁出）。
  * 纯 Node 实现，无 Obsidian 依赖：输入状态条目与可选的 diff 提供者，输出自然语言摘要 + 文件清单。
+ *
+ * v0.2.0：`SvnStatusKind` 新增取值（replaced/obstructed/incomplete/external/ignored）后补齐标签与排序，
+ * 避免新增状态在摘要里显示为 undefined。
  */
-import type { SvnStatusEntry, DiffLine } from "./types";
+import type { SvnStatusEntry, DiffLine, SvnStatusKind } from "./types";
 
-const LABELS: Record<SvnStatusEntry["status"], string> = {
+const LABELS: Record<SvnStatusKind, string> = {
   added: "新增",
   modified: "修改",
   deleted: "删除",
   conflict: "冲突",
   untracked: "未跟踪",
-  missing: "缺失"
+  missing: "缺失",
+  replaced: "替换",
+  obstructed: "受阻",
+  incomplete: "不完整",
+  external: "外部",
+  ignored: "已忽略",
 };
 
-const STATUS_ORDER: SvnStatusEntry["status"][] = ["added", "modified", "deleted", "untracked", "missing", "conflict"];
+const STATUS_ORDER: SvnStatusKind[] = [
+  "added",
+  "modified",
+  "deleted",
+  "replaced",
+  "untracked",
+  "missing",
+  "obstructed",
+  "incomplete",
+  "external",
+  "ignored",
+  "conflict",
+];
 
-const ACTION_PHRASES: Record<SvnStatusEntry["status"], string> = {
+const ACTION_PHRASES: Record<SvnStatusKind, string> = {
   added: "新增了",
   modified: "更新了",
   deleted: "移除了",
   untracked: "新增了",
   missing: "移除了",
-  conflict: "存在冲突："
+  replaced: "替换了",
+  obstructed: "受阻于",
+  incomplete: "未完整获取",
+  external: "包含外部项",
+  ignored: "忽略了",
+  conflict: "存在冲突：",
 };
 
 export type SummaryDiffLine = {
@@ -163,12 +188,24 @@ async function buildContentPhrase(
 }
 
 async function buildActionSummary(entries: SvnStatusEntry[], diffProvider?: SummaryDiffProvider): Promise<string> {
-  const statusCounts = entries.reduce<Record<SvnStatusEntry["status"], number>>(
+  const statusCounts = entries.reduce<Record<SvnStatusKind, number>>(
     (acc, item) => {
       acc[item.status] += 1;
       return acc;
     },
-    { added: 0, modified: 0, deleted: 0, conflict: 0, untracked: 0, missing: 0 }
+    {
+      added: 0,
+      modified: 0,
+      deleted: 0,
+      conflict: 0,
+      untracked: 0,
+      missing: 0,
+      replaced: 0,
+      obstructed: 0,
+      incomplete: 0,
+      external: 0,
+      ignored: 0,
+    }
   );
 
   const actionParts = STATUS_ORDER
