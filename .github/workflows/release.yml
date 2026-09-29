@@ -19,6 +19,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # 中转一层：secrets 不能直接出现在 step 的 if 条件里，job 级 env 可以
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,13 +64,13 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: ${{ env.NPM_TOKEN != '' }}
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Skip notice (no NPM_TOKEN)
-        if: ${{ secrets.NPM_TOKEN == '' }}
+        if: ${{ env.NPM_TOKEN == '' }}
         run: echo "::warning::未配置 NPM_TOKEN，已跳过 npm 发布；请在 Secrets 中添加后重跑本工作流。"
 
       - name: Create GitHub Release

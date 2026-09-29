@@ -262,6 +262,25 @@ try {
     Invoke-FingerprintScan $repo
   }
 
+  # 3.5 闸门：PowerShell 脚本编码（5.1 必须带 UTF-8 BOM，否则中文被按 ANSI 读取、整段解析失败）
+  Write-Step '3.5 脚本编码检查（UTF-8 BOM）'
+  $scriptsDir = Join-Path $repo 'scripts'
+  if (Test-Path -LiteralPath $scriptsDir) {
+    $psFiles = @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.ps1' -Recurse -File)
+    $noBom = @()
+    foreach ($f in $psFiles) {
+      $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+      $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+      if (-not $hasBom) { $noBom += $f.Name }
+    }
+    if ($noBom.Count -gt 0) {
+      Stop-WithFailure '3.5 脚本编码检查' ('以下脚本缺少 UTF-8 BOM：' + ($noBom -join ', '))
+    }
+    Write-Ok "$($psFiles.Count) 个 PowerShell 脚本均带 UTF-8 BOM"
+  } else {
+    Write-Warn2 '没有 scripts 目录（跳过）'
+  }
+
   # 4. 构建
   Invoke-Checked '4. 构建（npm run build）' { & npm run build }
   Write-Ok '构建完成'
