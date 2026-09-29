@@ -1,0 +1,80 @@
+# 推 tag（v*）时：校验版本 → 跑闸门 → 发布到 npm → 创建 GitHub Release。
+#
+# 前置（仓库 Settings → Secrets and variables → Actions）：
+#   NPM_TOKEN = npm 的 Automation token（https://www.npmjs.com/settings/<user>/tokens）
+#   未配置时跳过 npm 发布，只创建 GitHub Release（不会让工作流变红）。
+#
+# 本地发布（不想用 CI 时）用 scripts/release.ps1 -Mode all。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # 创建 Release
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Verify tag matches package.json
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(node -p "require('./package.json').version")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 package.json 版本 $pkg_version 不一致"
+            exit 1
+          fi
+          echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Verify CHANGELOG has this version
+        run: |
+          if ! grep -q "## \[${{ steps.version.outputs.version }}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 缺少 [${{ steps.version.outputs.version }}] 条目"
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip notice (no NPM_TOKEN)
+        if: ${{ secrets.NPM_TOKEN == '' }}
+        run: echo "::warning::未配置 NPM_TOKEN，已跳过 npm 发布；请在 Secrets 中添加后重跑本工作流。"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-from-tag \
+            --verify-tag
